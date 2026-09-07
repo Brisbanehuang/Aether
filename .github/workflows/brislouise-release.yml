@@ -1,0 +1,102 @@
+name: Brislouise Aether validation and image
+
+on:
+  push:
+    branches: [codex/v0716-production]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: brislouise-aether-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  AETHER_BUILD_VERSION: 0.7.16
+  AETHER_VERSION: 0.7.16
+  AETHER_BUILD_TYPE: release
+  CARGO_INCREMENTAL: 0
+  CARGO_PROFILE_DEV_DEBUG: 0
+  CARGO_PROFILE_TEST_DEBUG: 0
+  CARGO_BUILD_JOBS: 2
+  RUST_MIN_STACK: 16777216
+
+jobs:
+  rust:
+    if: github.repository == 'Brisbanehuang/Aether'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
+        with:
+          toolchain: 1.95.0
+          components: rustfmt, clippy
+      - uses: rui314/setup-mold@7e4f20ad28a2e8ca6fd0892ccf72e2abb706b9c3
+      - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c
+        with:
+          shared-key: brislouise-v0716
+      - name: Expose PostgreSQL test binaries
+        run: pg_config --bindir >> "$GITHUB_PATH"
+      - run: cargo fmt --all --check
+      - name: Gateway, data and scheduler tests
+        env:
+          RUSTFLAGS: -C link-arg=-fuse-ld=mold
+          AETHER_REQUIRE_LOCAL_POSTGRES_TESTS: 'true'
+        run: cargo test --locked -p aether-gateway -p aether-data -p aether-data-postgres -p aether-scheduler-core -- --test-threads=2
+      - name: Clippy on changed runtime paths
+        env:
+          RUSTFLAGS: -C link-arg=-fuse-ld=mold
+        run: cargo clippy --locked -p aether-gateway -p aether-data -p aether-data-postgres -p aether-scheduler-core --lib --bins -- -D warnings
+
+  frontend:
+    if: github.repository == 'Brisbanehuang/Aether'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            frontend/package-lock.json
+            aether-vscodex/web/package-lock.json
+      - run: npm ci --no-audit --no-fund
+        working-directory: aether-vscodex/web
+      - run: npm ci --no-audit --no-fund
+        working-directory: frontend
+      - run: npm run type-check && npx eslint . && npm run test:run && npm run build
+        working-directory: frontend
+
+  image:
+    if: github.repository == 'Brisbanehuang/Aether'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f
+      - name: Build immutable amd64 candidate
+        run: |
+          docker buildx build --platform linux/amd64 --load --progress plain \
+            --build-arg AETHER_BUILD_VERSION=0.7.16 \
+            --build-arg AETHER_BASE_COMMIT=a26680f4607a6ea47c7d5cbf3b2f0381629de600 \
+            --build-arg AETHER_PATCH_COMMIT="$GITHUB_SHA" \
+            -f Dockerfile.brislouise \
+            -t "brislouise/aether:0.7.16-provider-keys-${GITHUB_SHA::12}" .
+      - name: Archive candidate, never deploy from CI
+        run: |
+          mkdir -p artifact
+          image="brislouise/aether:0.7.16-provider-keys-${GITHUB_SHA::12}"
+          docker image inspect "$image" > artifact/image-inspect.json
+          test "$(docker image inspect "$image" --format '{{.Architecture}} {{.Os}}')" = 'amd64 linux'
+          docker save "$image" | gzip -1 > artifact/aether-image.tar.gz
+          sha256sum artifact/aether-image.tar.gz > artifact/SHA256SUMS
+          git rev-parse HEAD > artifact/source-commit.txt
+          git rev-parse HEAD^{tree} > artifact/source-tree.txt
+      - uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4
+        with:
+          name: aether-v0716-amd64
+          path: artifact/
+          if-no-files-found: error
+          retention-days: 7
