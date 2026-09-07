@@ -8,7 +8,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: brislouise-aether-${{ github.ref }}
+  group: brislouise-aether-${{ github.sha }}
   cancel-in-progress: false
 
 env:
@@ -70,7 +70,7 @@ jobs:
         working-directory: frontend
 
   image:
-    if: github.repository == 'Brisbanehuang/Aether'
+    if: github.repository == 'Brisbanehuang/Aether' && !contains(github.event.head_commit.message, '[validation-only]')
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
