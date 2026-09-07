@@ -151,10 +151,13 @@ describe('CrossTabRefreshCoordinator', () => {
     const first = new CrossTabRefreshCoordinator({
       storage: localStorage,
       channelFactory: createChannel,
+      // Exercise the bounded retry without the production HTTP timeout.
+      waitTimeoutMs: 50,
     })
     const second = new CrossTabRefreshCoordinator({
       storage: localStorage,
       channelFactory: createChannel,
+      waitTimeoutMs: 50,
     })
 
     const firstRun = first.run(firstExecutor)
