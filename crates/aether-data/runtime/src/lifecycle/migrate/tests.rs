@@ -876,7 +876,6 @@ const UNPUBLISHED_LEGACY_DATA_REWRITE_MIGRATION_VERSIONS: &[i64] = &[
     20260827010000,
     20260827020000,
     20260827030000,
-    20260829000000,
     20260903010000,
 ];
 
@@ -1784,6 +1783,7 @@ fn pending_migrations_from_applied_skips_versions_already_applied() {
             20260821130000,
             20260827040000,
             20260827050000,
+            20260829000000,
             20260831000000,
             20260831010000,
             20260831030000,
