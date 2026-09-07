@@ -43,6 +43,7 @@ struct MemoryAuthApiKeyOwnerSnapshot {
     user_is_deleted: bool,
     user_rate_limit: Option<i32>,
     user_allowed_providers: Option<Vec<String>>,
+    user_provider_key_policies: BTreeMap<String, Vec<String>>,
     user_allowed_api_formats: Option<Vec<String>>,
     user_allowed_models: Option<Vec<String>>,
 }
@@ -59,6 +60,7 @@ impl From<&StoredAuthApiKeySnapshot> for MemoryAuthApiKeyOwnerSnapshot {
             user_is_deleted: snapshot.user_is_deleted,
             user_rate_limit: snapshot.user_rate_limit,
             user_allowed_providers: snapshot.user_allowed_providers.clone(),
+            user_provider_key_policies: snapshot.user_provider_key_policies.clone(),
             user_allowed_api_formats: snapshot.user_allowed_api_formats.clone(),
             user_allowed_models: snapshot.user_allowed_models.clone(),
         }
@@ -77,6 +79,7 @@ impl From<&StoredUserAuthRecord> for MemoryAuthApiKeyOwnerSnapshot {
             user_is_deleted: user.is_deleted,
             user_rate_limit: None,
             user_allowed_providers: user.allowed_providers.clone(),
+            user_provider_key_policies: BTreeMap::new(),
             user_allowed_api_formats: user.allowed_api_formats.clone(),
             user_allowed_models: user.allowed_models.clone(),
         }
@@ -721,6 +724,7 @@ impl AuthApiKeyWriteRepository for InMemoryAuthApiKeySnapshotRepository {
             user_is_deleted: owner.user_is_deleted,
             user_rate_limit: owner.user_rate_limit,
             user_allowed_providers: owner.user_allowed_providers,
+            user_provider_key_policies: owner.user_provider_key_policies,
             user_allowed_api_formats: owner.user_allowed_api_formats,
             user_allowed_models: owner.user_allowed_models,
             api_key_id: record.api_key_id.clone(),
@@ -1848,6 +1852,36 @@ mod tests {
             .await
             .expect("owner fixture lookup should succeed")
             .is_none());
+    }
+
+    #[tokio::test]
+    async fn create_user_api_key_inherits_owner_provider_key_policies() {
+        let mut owner = sample_snapshot("owner-fixture", "user-1");
+        owner.user_provider_key_policies.insert(
+            "provider-1".to_string(),
+            vec!["provider-key-1".to_string(), "provider-key-2".to_string()],
+        );
+        let repository =
+            InMemoryAuthApiKeySnapshotRepository::default().with_owner_snapshots([owner]);
+
+        repository
+            .create_user_api_key(sample_create_user_api_key_record("user-1", "key-created"))
+            .await
+            .expect("create should succeed")
+            .expect("created key should be returned");
+
+        let snapshot = repository
+            .find_api_key_snapshot(AuthApiKeyLookupKey::ApiKeyId("key-created"))
+            .await
+            .expect("created key lookup should resolve")
+            .expect("created key snapshot should exist");
+        assert_eq!(
+            snapshot.user_provider_key_policies,
+            std::collections::BTreeMap::from([(
+                "provider-1".to_string(),
+                vec!["provider-key-1".to_string(), "provider-key-2".to_string()],
+            )])
+        );
     }
 
     #[tokio::test]
