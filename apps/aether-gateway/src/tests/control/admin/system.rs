@@ -1046,6 +1046,11 @@ async fn gateway_handles_admin_system_users_export_locally_with_trusted_admin_pr
     let provider_id = "provider-tiered";
     let enterprise_key_id = "key-basic-tier";
     let professional_key_id = "key-premium-tier";
+    let credential_state = AppState::new()
+        .expect("credential fixture should build")
+        .with_data_state_for_tests(
+            GatewayDataState::default().with_encryption_key_for_tests(DEVELOPMENT_ENCRYPTION_KEY),
+        );
     let mut enterprise_key = sample_key(
         enterprise_key_id,
         provider_id,
@@ -1053,6 +1058,11 @@ async fn gateway_handles_admin_system_users_export_locally_with_trusted_admin_pr
         "enterprise-secret",
     );
     enterprise_key.name = "基础套餐".to_string();
+    enterprise_key.encrypted_api_key = Some(
+        credential_state
+            .seal_provider_catalog_key_api_key(provider_id, enterprise_key_id, "enterprise-secret")
+            .expect("read-only catalog fixture should use current credential format"),
+    );
     let mut professional_key = sample_key(
         professional_key_id,
         provider_id,
@@ -1060,6 +1070,15 @@ async fn gateway_handles_admin_system_users_export_locally_with_trusted_admin_pr
         "professional-secret",
     );
     professional_key.name = "高级套餐".to_string();
+    professional_key.encrypted_api_key = Some(
+        credential_state
+            .seal_provider_catalog_key_api_key(
+                provider_id,
+                professional_key_id,
+                "professional-secret",
+            )
+            .expect("read-only catalog fixture should use current credential format"),
+    );
     let provider_catalog_repository = Arc::new(InMemoryProviderCatalogReadRepository::seed(
         vec![sample_provider(provider_id, "tiered-provider", 10)],
         vec![],
