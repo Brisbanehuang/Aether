@@ -1,0 +1,119 @@
+# syntax=docker/dockerfile:1
+
+ARG RUST_VERSION=1.95.0
+
+FROM node:22-slim AS frontend-builder
+ARG AETHER_BUILD_VERSION
+WORKDIR /build/frontend
+COPY frontend/package*.json ./
+RUN --mount=type=cache,id=aether-custom-npm,target=/root/.npm,sharing=locked \
+    npm ci --no-audit --no-fund
+COPY frontend/ ./
+COPY aether-vscodex/ /build/aether-vscodex/
+RUN AETHER_BUILD_VERSION="${AETHER_BUILD_VERSION}" \
+    AETHER_VERSION="${AETHER_BUILD_VERSION}" \
+    npm run build
+
+FROM rust:${RUST_VERSION}-slim AS gateway-builder
+ARG AETHER_BUILD_VERSION
+WORKDIR /build
+ENV AETHER_BUILD_VERSION=${AETHER_BUILD_VERSION} \
+    AETHER_VERSION=${AETHER_BUILD_VERSION} \
+    AETHER_BUILD_TYPE=release \
+    CARGO_REGISTRIES_CRATES_IO_PROTOCOL=sparse \
+    CARGO_BUILD_JOBS=2 \
+    CARGO_PROFILE_RELEASE_LTO=thin \
+    CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16 \
+    RUSTFLAGS="-C linker=clang -C link-arg=-fuse-ld=lld"
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    apt-get update && apt-get install -y --no-install-recommends \
+    build-essential ca-certificates clang cmake git libclang-dev libssl-dev \
+    lld pkg-config perl
+COPY Cargo.toml Cargo.lock ./
+COPY apps/ ./apps/
+COPY crates/ ./crates/
+RUN --mount=type=cache,id=aether-custom-cargo-registry,target=/usr/local/cargo/registry,sharing=locked \
+    --mount=type=cache,id=aether-custom-cargo-git,target=/usr/local/cargo/git,sharing=locked \
+    --mount=type=cache,id=aether-custom-cargo-target,target=/build/target,sharing=locked \
+    cargo build --release --locked -p aether-gateway --bin aether-gateway --features jemalloc && \
+    install -m 0755 target/release/aether-gateway /tmp/aether-gateway
+
+FROM gateway-builder AS runtime-prep
+RUN set -eux; \
+    mkdir -p \
+      /runtime-root/etc/ssl \
+      /runtime-root/lib \
+      /runtime-root/lib64 \
+      /runtime-root/opt/aether/logs \
+      /runtime-root/opt/aether/releases/image/bin \
+      /runtime-root/opt/aether/releases/image/frontend \
+      /runtime-root/usr/lib; \
+    install -m 0755 /tmp/aether-gateway \
+      /runtime-root/opt/aether/releases/image/bin/aether-gateway; \
+    ln -s /opt/aether/releases/image /runtime-root/opt/aether/current; \
+    : > /tmp/runtime-libs.txt; \
+    : > /tmp/runtime-scan-queue.txt; \
+    printf '%s\n' /tmp/aether-gateway >> /tmp/runtime-scan-queue.txt; \
+    while [ -s /tmp/runtime-scan-queue.txt ]; do \
+      current="$(head -n1 /tmp/runtime-scan-queue.txt)"; \
+      sed -i '1d' /tmp/runtime-scan-queue.txt; \
+      ldd "$current" | awk '/=>/ { print $3 } $1 ~ /^\// { print $1 }' | while read -r lib; do \
+        [ -n "$lib" ]; \
+        if ! grep -Fxq "$lib" /tmp/runtime-libs.txt; then \
+          printf '%s\n' "$lib" >> /tmp/runtime-libs.txt; \
+          printf '%s\n' "$lib" >> /tmp/runtime-scan-queue.txt; \
+        fi; \
+      done; \
+    done; \
+    sort -u /tmp/runtime-libs.txt -o /tmp/runtime-libs.txt; \
+    while read -r lib; do \
+      [ -n "$lib" ]; \
+      dest="/runtime-root$(dirname "$lib")"; \
+      mkdir -p "$dest"; \
+      cp -L "$lib" "$dest/"; \
+    done < /tmp/runtime-libs.txt; \
+    for lib in \
+      /lib/x86_64-linux-gnu/libnss_dns.so.2 \
+      /lib/x86_64-linux-gnu/libnss_files.so.2 \
+      /lib/x86_64-linux-gnu/libresolv.so.2; do \
+      if [ -f "$lib" ]; then \
+        dest="/runtime-root$(dirname "$lib")"; \
+        mkdir -p "$dest"; \
+        cp -L "$lib" "$dest/"; \
+      fi; \
+    done; \
+    cp -a /usr/lib/ssl /runtime-root/usr/lib/; \
+    cp -a /etc/ssl/certs /runtime-root/etc/ssl/; \
+    if [ -f /etc/ssl/openssl.cnf ]; then \
+      cp /etc/ssl/openssl.cnf /runtime-root/etc/ssl/openssl.cnf; \
+    fi; \
+    if [ -f /etc/nsswitch.conf ]; then \
+      cp /etc/nsswitch.conf /runtime-root/etc/nsswitch.conf; \
+    fi
+COPY --from=frontend-builder /build/frontend/dist/ \
+  /runtime-root/opt/aether/releases/image/frontend/
+
+FROM scratch
+ARG AETHER_BUILD_VERSION
+ARG AETHER_BASE_COMMIT
+ARG AETHER_PATCH_COMMIT
+LABEL org.opencontainers.image.title="Aether" \
+      org.opencontainers.image.source="https://github.com/fawney19/Aether" \
+      org.opencontainers.image.version="${AETHER_BUILD_VERSION}" \
+      online.brislouise.aether.base-commit="${AETHER_BASE_COMMIT}" \
+      online.brislouise.aether.patch-commit="${AETHER_PATCH_COMMIT}"
+COPY --from=runtime-prep /runtime-root/ /
+WORKDIR /opt/aether
+ENV LANG=C.UTF-8 \
+    LC_ALL=C.UTF-8 \
+    RUST_LOG=aether_gateway=info \
+    APP_PORT=8084 \
+    AETHER_BASE_DIR=/opt/aether \
+    AETHER_UPDATE_STRATEGY=manual \
+    AETHER_GATEWAY_STATIC_DIR=/opt/aether/current/frontend
+EXPOSE 8084
+HEALTHCHECK --interval=30s --timeout=10s --start-period=45s --retries=3 \
+  CMD ["/opt/aether/current/bin/aether-gateway", "--healthcheck"]
+USER 0:0
+ENTRYPOINT ["/opt/aether/current/bin/aether-gateway"]
