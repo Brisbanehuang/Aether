@@ -2,7 +2,7 @@ name: Brislouise Aether validation and image
 
 on:
   push:
-    branches: [codex/v0716-production]
+    branches: [codex/v0719-production]
 
 permissions:
   contents: read
@@ -12,8 +12,8 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  AETHER_BUILD_VERSION: 0.7.16
-  AETHER_VERSION: 0.7.16
+  AETHER_BUILD_VERSION: 0.7.19
+  AETHER_VERSION: 0.7.19
   AETHER_BUILD_TYPE: release
   CARGO_INCREMENTAL: 0
   CARGO_PROFILE_DEV_DEBUG: 0
@@ -35,19 +35,23 @@ jobs:
       - uses: rui314/setup-mold@7e4f20ad28a2e8ca6fd0892ccf72e2abb706b9c3
       - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c
         with:
-          shared-key: brislouise-v0716
+          shared-key: brislouise-v0719
       - name: Expose PostgreSQL test binaries
         run: pg_config --bindir >> "$GITHUB_PATH"
       - run: cargo fmt --all --check
-      - name: Gateway, data and scheduler tests
+      - name: Gateway, data, scheduler, routing and integration tests
         env:
           RUSTFLAGS: -C link-arg=-fuse-ld=mold
           AETHER_REQUIRE_LOCAL_POSTGRES_TESTS: 'true'
-        run: cargo test --locked -p aether-gateway -p aether-data -p aether-data-postgres -p aether-scheduler-core -- --test-threads=2
+        run: cargo test --locked -p aether-gateway -p aether-data -p aether-data-postgres -p aether-scheduler-core -p aether-routing-core -p aether-integration-tests -- --test-threads=2
       - name: Clippy on changed runtime paths
         env:
           RUSTFLAGS: -C link-arg=-fuse-ld=mold
-        run: cargo clippy --locked -p aether-gateway -p aether-data -p aether-data-postgres -p aether-scheduler-core --lib --bins -- -D warnings
+        run: cargo clippy --locked -p aether-gateway -p aether-data -p aether-data-postgres -p aether-scheduler-core -p aether-routing-core --lib --bins -- -D warnings
+      - name: Clippy on integration test targets
+        env:
+          RUSTFLAGS: -C link-arg=-fuse-ld=mold
+        run: cargo clippy --locked -p aether-integration-tests --tests -- -D warnings
 
   frontend:
     if: github.repository == 'Brisbanehuang/Aether'
@@ -79,15 +83,15 @@ jobs:
       - name: Build immutable amd64 candidate
         run: |
           docker buildx build --platform linux/amd64 --load --progress plain \
-            --build-arg AETHER_BUILD_VERSION=0.7.16 \
-            --build-arg AETHER_BASE_COMMIT=a26680f4607a6ea47c7d5cbf3b2f0381629de600 \
+            --build-arg AETHER_BUILD_VERSION=0.7.19 \
+            --build-arg AETHER_BASE_COMMIT=361952ada9e3d01ac180846cee497cd1f55ad1c3 \
             --build-arg AETHER_PATCH_COMMIT="$GITHUB_SHA" \
             -f Dockerfile.brislouise \
-            -t "brislouise/aether:0.7.16-provider-keys-${GITHUB_SHA::12}" .
+            -t "brislouise/aether:0.7.19-provider-keys-${GITHUB_SHA::12}" .
       - name: Archive candidate, never deploy from CI
         run: |
           mkdir -p artifact
-          image="brislouise/aether:0.7.16-provider-keys-${GITHUB_SHA::12}"
+          image="brislouise/aether:0.7.19-provider-keys-${GITHUB_SHA::12}"
           docker image inspect "$image" > artifact/image-inspect.json
           test "$(docker image inspect "$image" --format '{{.Architecture}} {{.Os}}')" = 'amd64 linux'
           docker save "$image" | gzip -1 > artifact/aether-image.tar.gz
@@ -96,7 +100,7 @@ jobs:
           git rev-parse HEAD^{tree} > artifact/source-tree.txt
       - uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4
         with:
-          name: aether-v0716-amd64
+          name: aether-v0719-amd64
           path: artifact/
           if-no-files-found: error
           retention-days: 7
